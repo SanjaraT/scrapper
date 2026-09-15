@@ -4,7 +4,26 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import time
 from datetime import datetime, timezone
+from pydantic import BaseModel, HttpUrl
+import json
 
+# ---------------------------------------------------------------------
+# Pydantic model for book details
+# ---------------------------------------------------------------------
+class Book(BaseModel):
+    title : str
+    product_url : HttpUrl
+    price_gbp : float
+    price_text : str
+    availability_text : str
+    rating_text : str
+    description : str | None
+    source_page : int
+    fetched_at : str
+
+# ---------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------
 URL = "https://books.toscrape.com/"
 CACHE_FILE = Path("cache/catalogue-page-1.html")
 
@@ -13,6 +32,9 @@ HEADERS = {
 }
 LAST_REQUEST_TIME = None
 
+# ---------------------------------------------------------------------
+# Fetch catalogue page
+# ---------------------------------------------------------------------
 def  fetch_catalogue_page(url, cache_file):
     if cache_file.exists():
         html = cache_file.read_text(encoding = "utf-8")
@@ -54,7 +76,9 @@ def  fetch_catalogue_page(url, cache_file):
 
     return html
 
+# ---------------------------------------------------------------------
 # Fetch and cache each book page
+# ---------------------------------------------------------------------
 def fetch_detail_page(url, cache_file):
     if cache_file.exists():
         html = cache_file.read_text(encoding="utf-8")
@@ -94,7 +118,9 @@ def fetch_detail_page(url, cache_file):
 
     return html
 
-# Extract the book details
+# ---------------------------------------------------------------------
+# Extract book details
+# ---------------------------------------------------------------------
 def extract_book_details(html, product_url, source_page):
     soup = BeautifulSoup(html, "html.parser")
 
@@ -140,9 +166,28 @@ def extract_book_details(html, product_url, source_page):
         "source_page":source_page,
         "fetched_at":fetched_at,
     }
+# ---------------------------------------------------------------------
+# Normalize price
+# ---------------------------------------------------------------------
+def normalize_price(price_text):
+    return float(price_text.replace("£", "").strip())
+
+def normalize_book(raw_book):
+    normalized_book = raw_book.copy()
+
+    normalized_book["price_gbp"] = normalize_price(
+        raw_book["price_text"]
+    )
+
+    return normalized_book
+
+normalized_books = []
 
 
 
+# ---------------------------------------------------------------------
+# Book URLs
+# ---------------------------------------------------------------------
 def discover_book_urls(html, page_url):
     soup = BeautifulSoup(html, "html.parser")
 
@@ -160,7 +205,9 @@ def discover_book_urls(html, page_url):
 
     return book_urls
 
+# ---------------------------------------------------------------------
 # Function for Next URL
+# ---------------------------------------------------------------------
 def discover_next_url(html, page_url):
     soup = BeautifulSoup(html, "html.parser")
 
@@ -170,8 +217,8 @@ def discover_next_url(html, page_url):
         href = next_link.get("href")
         return urljoin(page_url, href)
     return None
-           
 
+# ---------------------------------------------------------------------          
 if __name__ == "__main__":
     current_url = URL
     all_book_urls = []
@@ -222,6 +269,9 @@ if __name__ == "__main__":
     print(f"discovered={len(all_book_urls)}")
     print(f"unique_urls={len(unique_book_urls)}")
 
+# ---------------------------------------------------------------------
+# Raw Books
+# ---------------------------------------------------------------------
 raw_books = []
 
 for index, product_url in enumerate(unique_book_urls, start=1):
@@ -267,3 +317,82 @@ print("All records contain the required 8 fields.")
 print(f"\ndetail_pages={len(raw_books)}")
 print(raw_books[0])
 
+# ---------------------------------------------------------------------
+# Price Normlized Books
+# ---------------------------------------------------------------------
+normalized_books = []
+
+for raw_book in raw_books:
+    normalized_book = normalize_book(raw_book)
+    normalized_books.append(normalized_book)
+
+print(f"normalized_books={len(normalized_books)}")
+
+# ----------------------------------------
+# Validate all books
+# ----------------------------------------
+
+valid_books = []
+invalid_books = []
+
+for book_data in normalized_books:
+
+    try:
+        validated_book = Book(
+            **book_data
+        )
+
+        valid_books.append(
+            validated_book.model_dump(mode="json")
+        )
+
+    except Exception as error:
+
+        invalid_books.append({
+            "record": book_data,
+            "error": str(error)
+        })
+
+
+print(
+    f"valid_books={len(valid_books)}"
+)
+
+print(
+    f"invalid_books={len(invalid_books)}"
+)
+
+# ----------------------------------------
+# Store validated results
+# ----------------------------------------
+
+output_dir = Path("output")
+output_dir.mkdir(exist_ok=True)
+
+books_file = output_dir / "books.json"
+errors_file = output_dir / "errors.json"
+
+with books_file.open(
+    "w",
+    encoding="utf-8"
+) as file:
+    json.dump(
+        valid_books,
+        file,
+        indent=2,
+        ensure_ascii=False
+    )
+
+with errors_file.open(
+    "w",
+    encoding="utf-8"
+) as file:
+    json.dump(
+        invalid_books,
+        file,
+        indent=2,
+        ensure_ascii=False
+    )
+
+print(f"Saved valid books to {books_file}")
+print(f"Saved errors to {errors_file}")
