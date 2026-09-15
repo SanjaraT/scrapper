@@ -1,0 +1,12 @@
+{
+  "started_at": "2026-09-15T13:17:19.893407+00:00",
+  "duration_seconds": 0.97,
+  "catalogue_pages": 3,
+  "catalogue_pages_fetched": 0,
+  "catalogue_cache_hits": 3,
+  "detail_pages_fetched": 0,
+  "detail_cache_hits": 60,
+  "valid_records": 60,
+  "invalid_records": 0,
+  "failed_pages": []
+}

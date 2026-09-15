@@ -32,11 +32,25 @@ HEADERS = {
 }
 LAST_REQUEST_TIME = None
 
+catalogue_fetches = 0
+catalogue_cache_hits = 0
+
+detail_fetches = 0
+detail_cache_hits = 0
+
+run_started_at = datetime.now(timezone.utc)
+run_start_time = time.time()
+
 # ---------------------------------------------------------------------
 # Fetch catalogue page
 # ---------------------------------------------------------------------
 def  fetch_catalogue_page(url, cache_file):
+
+    global catalogue_fetches
+    global catalogue_cache_hits
+
     if cache_file.exists():
+        catalogue_cache_hits += 1
         html = cache_file.read_text(encoding = "utf-8")
 
         print("CACHE HIT")
@@ -44,6 +58,8 @@ def  fetch_catalogue_page(url, cache_file):
 
         return html
     print("FETCH")
+
+    catalogue_fetches +=  1
 
     global LAST_REQUEST_TIME 
 
@@ -80,43 +96,92 @@ def  fetch_catalogue_page(url, cache_file):
 # Fetch and cache each book page
 # ---------------------------------------------------------------------
 def fetch_detail_page(url, cache_file):
+    global detail_fetches
+    global detail_cache_hits
+
     if cache_file.exists():
+        detail_cache_hits += 1
+
         html = cache_file.read_text(encoding="utf-8")
+
         print("CACHE HIT")
         print(f"response_size = {len(html)} bytes")
+
         return html
     
     print("FETCH")
 
+    detail_fetches += 1
+
     global LAST_REQUEST_TIME
 
-    if LAST_REQUEST_TIME is not None:
-        elapsed = time.time() - LAST_REQUEST_TIME
-        if elapsed < 0.5:
-            time.sleep(0.5 - elapsed)
+    max_attempts = 2
 
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=10
-    )
+    for attempt in range (1, max_attempts + 1):
 
-    LAST_REQUEST_TIME = time.time()
+        if LAST_REQUEST_TIME is not None:
+            elapsed = time.time() - LAST_REQUEST_TIME
+            if elapsed < 0.5:
+                time.sleep(0.5 - elapsed)
 
-    if response.status_code != 200:
+        try:
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=10
+            )
+
+            LAST_REQUEST_TIME = time.time()
+
+        except requests.exceptions.Timeout:
+            print(
+                f"TIMEOUT on attempt {attempt}/{max_attempts}"
+            )
+
+            if attempt == max_attempts:
+                raise
+
+            continue
+
+        if response.status_code == 200:
+            response.encoding = "utf-8"
+
+            html = response.text
+
+            cache_file.parent.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            cache_file.write_text(
+                html,
+                encoding="utf-8"
+            )
+    
+
+            print(f"response_size = {len(html)} bytes")
+
+            return html
+
+        if 500 <= response.status_code <= 599:
+
+            print(
+                f"SERVER ERROR {response.status_code} "
+                f"on attempt {attempt}/{max_attempts}"
+            )
+
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Request failed with status code "
+                    f"{response.status_code}"
+                )
+
+            continue
+
         raise RuntimeError(
-            f"request failed with status code {response.status_code}"
+            f"Request failed with status code "
+            f"{response.status_code}"
         )
-
-    response.encoding = "utf-8"
-    html = response.text    
-
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(html, encoding="utf-8")
-
-    print(f"response_size = {len(html)} bytes")
-
-    return html
 
 # ---------------------------------------------------------------------
 # Extract book details
@@ -264,6 +329,9 @@ if __name__ == "__main__":
             current_url = next_url
 
     unique_book_urls = list(dict.fromkeys(all_book_urls))
+    # unique_book_urls.append(
+    #     "https://books.toscrape.com/catalogue/fake-book-9999/index.html"
+    # )
 
     print(f"catalogue_pages=3")
     print(f"discovered={len(all_book_urls)}")
@@ -273,49 +341,56 @@ if __name__ == "__main__":
 # Raw Books
 # ---------------------------------------------------------------------
 raw_books = []
+failed_pages = []
 
-for index, product_url in enumerate(unique_book_urls, start=1):
+for index, product_url in enumerate(
+    unique_book_urls,
+    start=1
+):
+
     cache_file = Path(
         f"cache/details/{index}.html"
     )
 
-    print(f"\nProcessing book {index}/60") 
-
-    html = fetch_detail_page(
-        product_url,
-        cache_file
+    print(
+        f"\nProcessing book {index}/60"
     )
 
-    source_page = book_source_pages[product_url]
-    book = extract_book_details(
-        html,
-        product_url,
-        source_page
-    )
+    try:
 
-    raw_books.append(book)
-
-required_fields = {
-    "title",
-    "product_url",
-    "price_text",
-    "availability_text",
-    "rating_text",
-    "description",
-    "source_page",
-    "fetched_at",
-}
-
-for book in raw_books:
-    if set(book.keys()) != required_fields:
-        raise RuntimeError(
-            f"Invalid fields for book: {book['product_url']}"
+        html = fetch_detail_page(
+            product_url,
+            cache_file
         )
 
-print("All records contain the required 8 fields.")
+        source_page = book_source_pages[
+            product_url
+        ]
 
-print(f"\ndetail_pages={len(raw_books)}")
-print(raw_books[0])
+        book = extract_book_details(
+            html,
+            product_url,
+            source_page
+        )
+
+        raw_books.append(
+            book
+        )
+
+    except Exception as error:
+
+        print(
+            f"FAILED: {product_url}"
+        )
+
+        print(
+            f"ERROR: {error}"
+        )
+
+        failed_pages.append({
+            "product_url": product_url,
+            "error": str(error)
+        })
 
 # ---------------------------------------------------------------------
 # Price Normlized Books
@@ -396,3 +471,39 @@ with errors_file.open(
 
 print(f"Saved valid books to {books_file}")
 print(f"Saved errors to {errors_file}")
+
+# ----------------------------------------
+# Create run report
+# ----------------------------------------
+
+run_duration = time.time() - run_start_time
+
+run_report = {
+    "started_at": run_started_at.isoformat(),
+    "duration_seconds": round(run_duration, 2),
+    "catalogue_pages": 3,
+    "catalogue_pages_fetched": catalogue_fetches,
+    "catalogue_cache_hits": catalogue_cache_hits,
+    "detail_pages_fetched": detail_fetches,
+    "detail_cache_hits": detail_cache_hits,
+    "valid_records": len(valid_books),
+    "invalid_records": len(invalid_books),
+    "failed_pages": failed_pages
+}
+
+run_report_file = output_dir / "run-report.json"
+
+with run_report_file.open(
+    "w",
+    encoding="utf-8"
+) as file:
+    json.dump(
+        run_report,
+        file,
+        indent=2,
+        ensure_ascii=False
+    )
+
+print(
+    f"Saved run report to {run_report_file}"
+)
